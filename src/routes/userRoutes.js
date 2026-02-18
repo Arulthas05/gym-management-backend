@@ -25,6 +25,22 @@ router.put('/profile', auth, userController.updateProfile);
 // @desc    Upload profile image for current user
 // @access  Private
 router.post('/profile/upload-image', auth, upload.single('profileImage'), userController.uploadProfileImage);
+
+// @route   PUT /api/users/body-stats
+// @desc    Update member body stats (height, weight)
+// @access  Private (Member)
+router.put(
+    '/body-stats',
+    auth,
+    roleCheck('member'),
+    [
+        body('height').optional().isNumeric().withMessage('Height must be a number'),
+        body('weight').optional().isNumeric().withMessage('Weight must be a number')
+    ],
+    validate,
+    userController.updateBodyStats
+);
+
 // @route   GET /api/users/: id
 // @desc    Get single user
 // @access  Private

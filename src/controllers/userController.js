@@ -907,6 +907,75 @@ const updateProfile = async (req, res) => {
     }
 };
 
+// @desc    Update member body stats (height, weight)
+// @route   PUT /api/users/body-stats
+// @access  Private (Member)
+const updateBodyStats = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { height, weight } = req.body;
+
+        // Validate that user is a member
+        if (req.user.role !== 'member') {
+            return res.status(403).json({
+                success: false,
+                message: 'Only members can update body stats'
+            });
+        }
+
+        // Validate input
+        if (!height && !weight) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please provide height or weight to update'
+            });
+        }
+
+        const updateFields = [];
+        const updateValues = [];
+
+        if (height !== undefined) {
+            updateFields.push('height = ?');
+            updateValues.push(parseFloat(height));
+        }
+        if (weight !== undefined) {
+            updateFields.push('weight = ?');
+            updateValues.push(parseFloat(weight));
+        }
+
+        if (updateFields.length > 0) {
+            updateValues.push(userId);
+            await db.query(
+                `UPDATE members SET ${updateFields.join(', ')} WHERE user_id = ?`,
+                updateValues
+            );
+        }
+
+        // Fetch updated member data
+        const [members] = await db.query(
+            'SELECT * FROM members WHERE user_id = ?',
+            [userId]
+        );
+
+        res.json({
+            success: true,
+            message: 'Body stats updated successfully',
+            data: {
+                height: members[0]?.height,
+                weight: members[0]?.weight
+            }
+        });
+
+    } catch (error) {
+        console.error('Update body stats error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error updating body stats',
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     getAllUsers,
     getUser,
@@ -919,5 +988,6 @@ module.exports = {
     updateProfilePicture,
     getProfile,
     uploadProfileImage,
-    updateProfile
+    updateProfile,
+    updateBodyStats
 };
