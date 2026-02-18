@@ -12,12 +12,18 @@ const cronJobs = require('./src/services/cronJobs');
 // Initialize Express app
 const app = express();
 
-// Security middleware
-app.use(helmet());
+// Security middleware - configure helmet to allow serving images
+app.use(helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    contentSecurityPolicy: false, // Allow loading images from same origin
+}));
 
 // CORS configuration
 app.use(cors({
-    origin: process.env.CLIENT_URL || 'http://localhost:3000',
+    origin: [
+        process.env.CLIENT_URL || 'http://localhost:3000',
+        'http://localhost:3006', // Add frontend port from .env
+    ],
     credentials:  true
 }));
 

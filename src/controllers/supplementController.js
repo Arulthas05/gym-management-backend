@@ -105,7 +105,10 @@ const getSupplement = async (req, res) => {
 // @access  Private (Admin)
 const createSupplement = async (req, res) => {
     try {
-        const { name, description, category, price, stockQuantity, imageUrl } = req.body;
+        const { name, description, category, price } = req.body;
+        // prefer uploaded file over imageUrl from body
+        const stockQuantity = req.body.stockQuantity || req.body.stock || 0;
+        const imageUrl = req.file ? `/uploads/supplements/${req.file.filename}` : (req.body.imageUrl || null);
 
         const [result] = await db.query(
             `INSERT INTO supplements (name, description, category, price, stock_quantity, image_url)
@@ -137,7 +140,9 @@ const createSupplement = async (req, res) => {
 const updateSupplement = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, description, category, price, stockQuantity, imageUrl, isActive } = req.body;
+        const { name, description, category, price, isActive } = req.body;
+        const stockQuantity = req.body.stockQuantity || req.body.stock || null;
+        const imageUrl = req.file ? `/uploads/supplements/${req.file.filename}` : (req.body.imageUrl || null);
 
         const [supplements] = await db.query('SELECT * FROM supplements WHERE id = ? ', [id]);
 
@@ -357,6 +362,133 @@ const getMemberOrders = async (req, res) => {
     }
 };
 
+// @desc    Purchase supplement (with payment)
+// @route   POST /api/supplements/purchase
+// @access  Private (Member)
+const purchaseSupplement = async (req, res) => {
+    try {
+        const { supplementId, quantity, paymentIntentId } = req.body;
+        const userId = req.user.id;
+
+        if (!supplementId || !quantity || !paymentIntentId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Supplement ID, quantity, and payment intent ID are required'
+            });
+        }
+
+        const connection = await db.getConnection();
+        await connection.beginTransaction();
+
+        try {
+            // Get member ID from user ID
+            let memberId = null;
+            if (req.user.role === 'member') {
+                const [members] = await connection.query(
+                    'SELECT id FROM members WHERE user_id = ?',
+                    [userId]
+                );
+                if (members.length === 0) {
+                    await connection.rollback();
+                    connection.release();
+                    return res.status(404).json({
+                        success: false,
+                        message: 'Member not found'
+                    });
+                }
+                memberId = members[0].id;
+            } else {
+                // For admins, we might want to handle differently or reject
+                await connection.rollback();
+                connection.release();
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only members can purchase supplements'
+                });
+            }
+
+            // Get supplement details
+            const [supplements] = await connection.query(
+                'SELECT * FROM supplements WHERE id = ?',
+                [supplementId]
+            );
+
+            if (supplements.length === 0) {
+                await connection.rollback();
+                connection.release();
+                return res.status(404).json({
+                    success: false,
+                    message: 'Supplement not found'
+                });
+            }
+
+            const supplement = supplements[0];
+
+            // Check stock
+            if (supplement.stock_quantity < quantity) {
+                await connection.rollback();
+                connection.release();
+                return res.status(400).json({
+                    success: false,
+                    message: `Insufficient stock. Only ${supplement.stock_quantity} available`
+                });
+            }
+
+            const totalAmount = supplement.price * quantity;
+
+            // Create order
+            const [orderResult] = await connection.query(
+                'INSERT INTO supplement_orders (member_id, total_amount, order_status) VALUES (?, ?, ?)',
+                [memberId, totalAmount, 'completed']
+            );
+
+            const orderId = orderResult.insertId;
+
+            // Create order item
+            await connection.query(
+                'INSERT INTO supplement_order_items (order_id, supplement_id, quantity, price) VALUES (?, ?, ?, ?)',
+                [orderId, supplementId, quantity, supplement.price]
+            );
+
+            // Update stock
+            await connection.query(
+                'UPDATE supplements SET stock_quantity = stock_quantity - ? WHERE id = ?',
+                [quantity, supplementId]
+            );
+
+            await connection.commit();
+            connection.release();
+
+            res.status(201).json({
+                success: true,
+                message: 'Purchase completed successfully',
+                data: {
+                    orderId,
+                    totalAmount,
+                    supplement: {
+                        id: supplement.id,
+                        name: supplement.name,
+                        quantity
+                    }
+                }
+            });
+
+        } catch (error) {
+            await connection.rollback();
+            connection.release();
+            throw error;
+        }
+
+    } catch (error) {
+        console.error('Purchase supplement error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error processing purchase',
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     getAllSupplements,
     getSupplement,
@@ -364,5 +496,6 @@ module.exports = {
     updateSupplement,
     deleteSupplement,
     createOrder,
-    getMemberOrders
+    getMemberOrders,
+    purchaseSupplement
 };

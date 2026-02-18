@@ -151,18 +151,29 @@ const login = async (req, res) => {
 
         // Get user details based on role
         let userDetails = {};
+        let roleSpecificId = null;
+        
         if (user.role === 'member') {
             const [members] = await db.query(
                 'SELECT * FROM members WHERE user_id = ?',
                 [user.id]
             );
             userDetails = members[0];
+            roleSpecificId = members[0]?.id; // Store member ID
         } else if (user.role === 'trainer') {
             const [trainers] = await db.query(
                 'SELECT * FROM trainers WHERE user_id = ?',
                 [user.id]
             );
             userDetails = trainers[0];
+            roleSpecificId = trainers[0]?.id; // Store trainer ID
+        } else if (user.role === 'admin') {
+            const [admins] = await db.query(
+                'SELECT * FROM admins WHERE user_id = ?',
+                [user.id]
+            );
+            userDetails = admins[0] || {};
+            roleSpecificId = admins[0]?.id; // Store admin ID
         }
 
         // Generate token
@@ -177,6 +188,9 @@ const login = async (req, res) => {
                     id: user.id,
                     email: user.email,
                     role: user.role,
+                    memberId: user.role === 'member' ? roleSpecificId : undefined,
+                    trainerId: user.role === 'trainer' ? roleSpecificId : undefined,
+                    adminId: user.role === 'admin' ? roleSpecificId : undefined,
                     ... userDetails
                 }
             // }

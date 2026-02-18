@@ -11,7 +11,20 @@ const upload = require('../middleware/uploads');
 // @desc    Get all users
 // @access  Private (Admin)
 router.get('/', auth, roleCheck('admin'), userController.getAllUsers);
+// @route   GET /api/users/profile
+// @desc    Get current user profile
+// @access  Private
+router.get('/profile', auth, userController.getProfile);
 
+// @route   PUT /api/users/profile
+// @desc    Update current user profile
+// @access  Private
+router.put('/profile', auth, userController.updateProfile);
+
+// @route   POST /api/users/profile/upload-image
+// @desc    Upload profile image for current user
+// @access  Private
+router.post('/profile/upload-image', auth, upload.single('profileImage'), userController.uploadProfileImage);
 // @route   GET /api/users/: id
 // @desc    Get single user
 // @access  Private

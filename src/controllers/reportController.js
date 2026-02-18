@@ -1,4 +1,6 @@
 const db = require('../config/database');
+const pdfService = require('../services/pdfService');
+const path = require('path');
 
 // @desc    Get dashboard statistics
 // @route   GET /api/reports/dashboard
@@ -318,7 +320,7 @@ const getAttendanceReport = async (req, res) => {
         );
 
         // Most active members
-        const [activeMembersQuery] = `
+        let activeMembersQuery = `
             SELECT 
                 m. id,
                 m.first_name,
@@ -660,6 +662,509 @@ const exportReport = async (req, res) => {
     }
 };
 
+// @desc    Get revenue report
+// @route   GET /api/reports/revenue
+// @access  Private (Admin)
+const getRevenueReport = async (req, res) => {
+    try {
+        const { period = 'month', startDate = '', endDate = '' } = req.query;
+
+        let dateFilter = '';
+        let params = [];
+
+        // Build date filter based on period
+        switch (period) {
+            case 'today':
+                dateFilter = 'AND DATE(payment_date) = CURDATE()';
+                break;
+            case 'week':
+                dateFilter = 'AND YEARWEEK(payment_date) = YEARWEEK(NOW())';
+                break;
+            case 'month':
+                dateFilter = 'AND YEAR(payment_date) = YEAR(NOW()) AND MONTH(payment_date) = MONTH(NOW())';
+                break;
+            case 'year':
+                dateFilter = 'AND YEAR(payment_date) = YEAR(NOW())';
+                break;
+            case 'custom':
+                if (startDate && endDate) {
+                    dateFilter = 'AND payment_date BETWEEN ? AND ?';
+                    params.push(startDate, endDate);
+                }
+                break;
+            default:
+                dateFilter = 'AND YEAR(payment_date) = YEAR(NOW()) AND MONTH(payment_date) = MONTH(NOW())';
+        }
+
+        // Total revenue
+        const [totalRevenue] = await db.query(
+            `SELECT 
+                COALESCE(SUM(amount), 0) as total,
+                COUNT(*) as transaction_count,
+                AVG(amount) as average_transaction
+            FROM payments 
+            WHERE payment_status = 'completed' ${dateFilter}`,
+            params
+        );
+
+        // Revenue by payment type
+        const [revenueByType] = await db.query(
+            `SELECT 
+                payment_type,
+                COALESCE(SUM(amount), 0) as total,
+                COUNT(*) as count
+            FROM payments 
+            WHERE payment_status = 'completed' ${dateFilter}
+            GROUP BY payment_type
+            ORDER BY total DESC`,
+            params
+        );
+
+        // Revenue by payment method
+        const [revenueByMethod] = await db.query(
+            `SELECT 
+                payment_method,
+                COALESCE(SUM(amount), 0) as total,
+                COUNT(*) as count
+            FROM payments 
+            WHERE payment_status = 'completed' ${dateFilter}
+            GROUP BY payment_method
+            ORDER BY total DESC`,
+            params
+        );
+
+        // Revenue trend (daily for week/month, monthly for year)
+        let trendGrouping = '';
+        let trendLabel = '';
+        
+        if (period === 'today' || period === 'week') {
+            trendGrouping = 'DATE(payment_date)';
+            trendLabel = 'date';
+        } else if (period === 'month' || period === 'custom') {
+            trendGrouping = 'DATE(payment_date)';
+            trendLabel = 'date';
+        } else {
+            trendGrouping = 'DATE_FORMAT(payment_date, "%Y-%m")';
+            trendLabel = 'month';
+        }
+
+        const [revenueTrend] = await db.query(
+            `SELECT 
+                ${trendGrouping} as period,
+                COALESCE(SUM(amount), 0) as revenue,
+                COUNT(*) as transactions
+            FROM payments 
+            WHERE payment_status = 'completed' ${dateFilter}
+            GROUP BY ${trendGrouping}
+            ORDER BY ${trendGrouping} ASC`,
+            params
+        );
+
+        // Top revenue generating members
+        const [topMembers] = await db.query(
+            `SELECT 
+                m.id,
+                m.first_name,
+                m.last_name,
+                COALESCE(SUM(p.amount), 0) as total_spent,
+                COUNT(p.id) as transaction_count
+            FROM members m
+            INNER JOIN payments p ON m.id = p.member_id
+            WHERE p.payment_status = 'completed' ${dateFilter}
+            GROUP BY m.id
+            ORDER BY total_spent DESC
+            LIMIT 10`,
+            params
+        );
+
+        res.json({
+            success: true,
+            data: {
+                summary: {
+                    totalRevenue: parseFloat(totalRevenue[0].total || 0),
+                    transactionCount: parseInt(totalRevenue[0].transaction_count || 0),
+                    averageTransaction: parseFloat(totalRevenue[0].average_transaction || 0)
+                },
+                revenueByType,
+                revenueByMethod,
+                revenueTrend,
+                topMembers,
+                period,
+                dateRange: period === 'custom' ? { startDate, endDate } : null
+            }
+        });
+
+    } catch (error) {
+        console.error('Get revenue report error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching revenue report',
+            error: error.message
+        });
+    }
+};
+
+// @desc    Get attendance report as PDF
+// @route   GET /api/reports/attendance/pdf
+// @access  Private (Admin)
+const getAttendanceReportPDF = async (req, res) => {
+    try {
+        const { period = 'month', startDate = '', endDate = '' } = req.query;
+
+        let dateFilter = '';
+        let params = [];
+
+        // Determine date range based on period
+        if (period === 'today') {
+            dateFilter = 'AND attendance_date = CURDATE()';
+        } else if (period === 'week') {
+            dateFilter = 'AND attendance_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)';
+        } else if (period === 'month') {
+            dateFilter = 'AND attendance_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)';
+        } else if (period === 'year') {
+            dateFilter = 'AND attendance_date >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)';
+        } else if (period === 'custom' && startDate && endDate) {
+            dateFilter = 'AND attendance_date BETWEEN ? AND ?';
+            params = [startDate, endDate];
+        }
+
+        // Daily attendance trend
+        const trendQuery = `
+            SELECT 
+                attendance_date,
+                COUNT(*) as total_check_ins,
+                COUNT(DISTINCT member_id) as unique_members
+            FROM attendance
+            WHERE 1=1 ${dateFilter}
+            GROUP BY attendance_date
+            ORDER BY attendance_date DESC
+        `;
+
+        const [attendanceTrend] = await db.query(trendQuery, params);
+
+        // Peak hours
+        const [peakHours] = await db.query(
+            `SELECT 
+                HOUR(check_in_time) as hour,
+                COUNT(*) as check_ins
+            FROM attendance
+            WHERE 1=1 ${dateFilter}
+            GROUP BY hour
+            ORDER BY check_ins DESC`,
+            params
+        );
+
+        // Most active members
+        let activeMembersQuery = `
+            SELECT 
+                m.id,
+                m.first_name,
+                m.last_name,
+                COUNT(a.id) as total_visits,
+                MAX(a.attendance_date) as last_visit
+            FROM members m
+            INNER JOIN attendance a ON m.id = a.member_id
+            WHERE 1=1 ${dateFilter}
+            GROUP BY m.id
+            ORDER BY total_visits DESC
+            LIMIT 10
+        `;
+
+        const [activeMembers] = await db.query(activeMembersQuery, params);
+
+        // Check-in method distribution
+        const [checkInMethods] = await db.query(
+            `SELECT 
+                check_in_method,
+                COUNT(*) as count
+            FROM attendance
+            WHERE 1=1 ${dateFilter}
+            GROUP BY check_in_method`,
+            params
+        );
+
+        // Generate PDF
+        const reportData = {
+            period,
+            attendanceTrend,
+            peakHours,
+            activeMembers,
+            checkInMethods,
+            dateRange: period === 'custom' ? { startDate, endDate } : null
+        };
+
+        const pdfPath = await pdfService.generateAttendanceReport(reportData);
+
+        // Send PDF file
+        res.download(pdfPath, path.basename(pdfPath), (err) => {
+            if (err) {
+                console.error('Error sending PDF:', err);
+                res.status(500).json({
+                    success: false,
+                    message: 'Error sending PDF report'
+                });
+            }
+        });
+
+    } catch (error) {
+        console.error('Get attendance report PDF error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error generating attendance report PDF',
+            error: error.message
+        });
+    }
+};
+
+// @desc    Get revenue report as PDF
+// @route   GET /api/reports/revenue/pdf
+// @access  Private (Admin)
+const getRevenueReportPDF = async (req, res) => {
+    try {
+        const { period = 'month', startDate = '', endDate = '' } = req.query;
+
+        let dateFilter = '';
+        let params = [];
+
+        // Build date filter based on period
+        switch (period) {
+            case 'today':
+                dateFilter = 'AND DATE(payment_date) = CURDATE()';
+                break;
+            case 'week':
+                dateFilter = 'AND YEARWEEK(payment_date) = YEARWEEK(NOW())';
+                break;
+            case 'month':
+                dateFilter = 'AND YEAR(payment_date) = YEAR(NOW()) AND MONTH(payment_date) = MONTH(NOW())';
+                break;
+            case 'year':
+                dateFilter = 'AND YEAR(payment_date) = YEAR(NOW())';
+                break;
+            case 'custom':
+                if (startDate && endDate) {
+                    dateFilter = 'AND payment_date BETWEEN ? AND ?';
+                    params.push(startDate, endDate);
+                }
+                break;
+            default:
+                dateFilter = 'AND YEAR(payment_date) = YEAR(NOW()) AND MONTH(payment_date) = MONTH(NOW())';
+        }
+
+        // Total revenue
+        const [totalRevenue] = await db.query(
+            `SELECT 
+                COALESCE(SUM(amount), 0) as total,
+                COUNT(*) as transaction_count,
+                AVG(amount) as average_transaction
+            FROM payments 
+            WHERE payment_status = 'completed' ${dateFilter}`,
+            params
+        );
+
+        // Revenue by payment type
+        const [revenueByType] = await db.query(
+            `SELECT 
+                payment_type,
+                COALESCE(SUM(amount), 0) as total,
+                COUNT(*) as count
+            FROM payments 
+            WHERE payment_status = 'completed' ${dateFilter}
+            GROUP BY payment_type
+            ORDER BY total DESC`,
+            params
+        );
+
+        // Revenue by payment method
+        const [revenueByMethod] = await db.query(
+            `SELECT 
+                payment_method,
+                COALESCE(SUM(amount), 0) as total,
+                COUNT(*) as count
+            FROM payments 
+            WHERE payment_status = 'completed' ${dateFilter}
+            GROUP BY payment_method
+            ORDER BY total DESC`,
+            params
+        );
+
+        // Revenue trend (daily for week/month, monthly for year)
+        let trendGrouping = '';
+        
+        if (period === 'today' || period === 'week') {
+            trendGrouping = 'DATE(payment_date)';
+        } else if (period === 'month' || period === 'custom') {
+            trendGrouping = 'DATE(payment_date)';
+        } else {
+            trendGrouping = 'DATE_FORMAT(payment_date, "%Y-%m")';
+        }
+
+        const [revenueTrend] = await db.query(
+            `SELECT 
+                ${trendGrouping} as period,
+                COALESCE(SUM(amount), 0) as revenue,
+                COUNT(*) as transactions
+            FROM payments 
+            WHERE payment_status = 'completed' ${dateFilter}
+            GROUP BY ${trendGrouping}
+            ORDER BY ${trendGrouping} ASC`,
+            params
+        );
+
+        // Top revenue generating members
+        const [topMembers] = await db.query(
+            `SELECT 
+                m.id,
+                m.first_name,
+                m.last_name,
+                COALESCE(SUM(p.amount), 0) as total_spent,
+                COUNT(p.id) as transaction_count
+            FROM members m
+            INNER JOIN payments p ON m.id = p.member_id
+            WHERE p.payment_status = 'completed' ${dateFilter}
+            GROUP BY m.id
+            ORDER BY total_spent DESC
+            LIMIT 10`,
+            params
+        );
+
+        // Generate PDF
+        const reportData = {
+            period,
+            summary: {
+                totalRevenue: parseFloat(totalRevenue[0].total || 0),
+                transactionCount: parseInt(totalRevenue[0].transaction_count || 0),
+                averageTransaction: parseFloat(totalRevenue[0].average_transaction || 0)
+            },
+            revenueByType,
+            revenueByMethod,
+            revenueTrend,
+            topMembers,
+            dateRange: period === 'custom' ? { startDate, endDate } : null
+        };
+
+        const pdfPath = await pdfService.generateRevenueReport(reportData);
+
+        // Send PDF file
+        res.download(pdfPath, path.basename(pdfPath), (err) => {
+            if (err) {
+                console.error('Error sending PDF:', err);
+                res.status(500).json({
+                    success: false,
+                    message: 'Error sending PDF report'
+                });
+            }
+        });
+
+    } catch (error) {
+        console.error('Get revenue report PDF error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error generating revenue report PDF',
+            error: error.message
+        });
+    }
+};
+
+// @desc    Get membership report as PDF
+// @route   GET /api/reports/membership/pdf
+// @access  Private (Admin)
+const getMembershipReportPDF = async (req, res) => {
+    try {
+        const { period = 'all', startDate = '', endDate = '' } = req.query;
+
+        // Membership by plan
+        const [membershipByPlan] = await db.query(
+            `SELECT 
+                mp.name as plan_name,
+                mp.price,
+                COUNT(mm.id) as total_subscriptions,
+                COUNT(CASE WHEN mm.status = 'active' THEN 1 END) as active_subscriptions,
+                SUM(mp.price) as total_revenue
+            FROM membership_plans mp
+            LEFT JOIN member_memberships mm ON mp.id = mm.membership_plan_id
+            GROUP BY mp.id
+            ORDER BY total_subscriptions DESC`
+        );
+
+        // New memberships trend
+        let trendQuery = `
+            SELECT 
+                DATE_FORMAT(created_at, '%Y-%m') as month,
+                COUNT(*) as count
+            FROM member_memberships
+            WHERE 1=1
+        `;
+
+        const trendParams = [];
+
+        if (startDate && endDate) {
+            trendQuery += ` AND created_at BETWEEN ? AND ?`;
+            trendParams.push(startDate, endDate);
+        }
+
+        trendQuery += ` GROUP BY month ORDER BY month DESC LIMIT 12`;
+
+        const [membershipTrend] = await db.query(trendQuery, trendParams);
+
+        // Expiring soon
+        const [expiringSoon] = await db.query(
+            `SELECT 
+                mm.*,
+                m.first_name,
+                m.last_name,
+                u.email,
+                mp.name as plan_name
+            FROM member_memberships mm
+            INNER JOIN members m ON mm.member_id = m.id
+            INNER JOIN users u ON m.user_id = u.id
+            INNER JOIN membership_plans mp ON mm.membership_plan_id = mp.id
+            WHERE mm.status = 'active'
+            AND mm.end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+            ORDER BY mm.end_date ASC`
+        );
+
+        // Membership status distribution
+        const [statusDistribution] = await db.query(
+            `SELECT 
+                status,
+                COUNT(*) as count
+            FROM member_memberships
+            GROUP BY status`
+        );
+
+        // Generate PDF
+        const reportData = {
+            period,
+            membershipByPlan,
+            membershipTrend,
+            expiringSoon,
+            statusDistribution,
+            dateRange: period === 'custom' && startDate && endDate ? { startDate, endDate } : null
+        };
+
+        const pdfPath = await pdfService.generateMembershipReport(reportData);
+
+        // Send PDF file
+        res.download(pdfPath, path.basename(pdfPath), (err) => {
+            if (err) {
+                console.error('Error sending PDF:', err);
+                res.status(500).json({
+                    success: false,
+                    message: 'Error sending PDF report'
+                });
+            }
+        });
+
+    } catch (error) {
+        console.error('Get membership report PDF error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error generating membership report PDF',
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     getDashboardStats,
     getMembershipReport,
@@ -667,5 +1172,9 @@ module.exports = {
     getAttendanceReport,
     getTrainerReport,
     getSupplementReport,
-    exportReport
+    exportReport,
+    getRevenueReport,
+    getAttendanceReportPDF,
+    getRevenueReportPDF,
+    getMembershipReportPDF
 };

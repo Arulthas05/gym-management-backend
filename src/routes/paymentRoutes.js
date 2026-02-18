@@ -53,8 +53,8 @@ router.post(
 
 // @route   GET /api/payments
 // @desc    Get all payments
-// @access  Private (Admin)
-router.get('/', auth, roleCheck('admin'), paymentController.getAllPayments);
+// @access  Private (Admin, Trainer, Member)
+router.get('/', auth, roleCheck('admin', 'trainer', 'member'), paymentController.getAllPayments);
 
 // @route   GET /api/payments/:id
 // @desc    Get single payment

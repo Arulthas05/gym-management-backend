@@ -586,6 +586,327 @@ const updateProfilePicture = async (req, res) => {
     }
 };
 
+// @desc    Get current user profile
+// @route   GET /api/users/profile
+// @access  Private
+const getProfile = async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        const [users] = await db.query(
+            'SELECT id, email, role, is_active, created_at, updated_at FROM users WHERE id = ?',
+            [userId]
+        );
+
+        if (users.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        const user = users[0];
+
+        // Get role-specific details
+        if (user.role === 'member') {
+            const [members] = await db.query(
+                'SELECT * FROM members WHERE user_id = ?',
+                [user.id]
+            );
+            user.details = members[0] || null;
+        } else if (user.role === 'trainer') {
+            const [trainers] = await db.query(
+                'SELECT * FROM trainers WHERE user_id = ?',
+                [user.id]
+            );
+            user.details = trainers[0] || null;
+        } else if (user.role === 'admin') {
+            const [admins] = await db.query(
+                'SELECT * FROM admins WHERE user_id = ?',
+                [user.id]
+            );
+            user.details = admins[0] || null;
+        } else {
+            // For other roles, set details to null
+            user.details = null;
+        }
+
+        res.json({
+            success: true,
+            data: user
+        });
+
+    } catch (error) {
+        console.error('Get profile error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching profile',
+            error: error.message
+        });
+    }
+};
+
+// @desc    Upload profile image for current user
+// @route   POST /api/users/profile/upload-image
+// @access  Private
+const uploadProfileImage = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        
+        if (!req.file) {
+            return res.status(400).json({
+                success: false,
+                message: 'No file uploaded'
+            });
+        }
+
+        const profileImagePath = `/uploads/profiles/${req.file.filename}`;
+
+        // Get user role
+        const [users] = await db.query('SELECT role FROM users WHERE id = ?', [userId]);
+
+        if (users.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        const role = users[0].role;
+
+        // Update profile image based on role
+        if (role === 'admin') {
+            await db.query(
+                'UPDATE admins SET profile_image = ? WHERE user_id = ?',
+                [profileImagePath, userId]
+            );
+        } else if (role === 'member') {
+            await db.query(
+                'UPDATE members SET profile_image = ? WHERE user_id = ?',
+                [profileImagePath, userId]
+            );
+        } else if (role === 'trainer') {
+            await db.query(
+                'UPDATE trainers SET profile_image = ? WHERE user_id = ?',
+                [profileImagePath, userId]
+            );
+        }
+
+        res.json({
+            success: true,
+            message: 'Profile image uploaded successfully',
+            data: {
+                profileImage: profileImagePath
+            }
+        });
+
+    } catch (error) {
+        console.error('Upload profile image error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error uploading profile image',
+            error: error.message
+        });
+    }
+};
+
+// @desc    Update current user profile
+// @route   PUT /api/users/profile
+// @access  Private
+const updateProfile = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { email, firstName, lastName, phone, address, dateOfBirth, gender, emergencyContact, specialization, rating } = req.body;
+
+        // Get user role
+        const [users] = await db.query('SELECT role FROM users WHERE id = ?', [userId]);
+
+        if (users.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        const role = users[0].role;
+
+        // Update email if provided
+        if (email) {
+            // Check if email is already taken by another user
+            const [existingUsers] = await db.query(
+                'SELECT id FROM users WHERE email = ? AND id != ?',
+                [email, userId]
+            );
+
+            if (existingUsers.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Email already in use'
+                });
+            }
+
+            await db.query(
+                'UPDATE users SET email = ? WHERE id = ?',
+                [email, userId]
+            );
+        }
+
+        // Update role-specific details
+        if (role === 'admin') {
+            const updateFields = [];
+            const updateValues = [];
+
+            if (firstName !== undefined) {
+                updateFields.push('first_name = ?');
+                updateValues.push(firstName);
+            }
+            if (lastName !== undefined) {
+                updateFields.push('last_name = ?');
+                updateValues.push(lastName);
+            }
+            if (phone !== undefined) {
+                updateFields.push('phone = ?');
+                updateValues.push(phone);
+            }
+            if (dateOfBirth !== undefined) {
+                updateFields.push('date_of_birth = ?');
+                updateValues.push(dateOfBirth);
+            }
+            if (gender !== undefined) {
+                updateFields.push('gender = ?');
+                updateValues.push(gender);
+            }
+            if (address !== undefined) {
+                updateFields.push('address = ?');
+                updateValues.push(address);
+            }
+
+            if (updateFields.length > 0) {
+                updateValues.push(userId);
+                await db.query(
+                    `UPDATE admins SET ${updateFields.join(', ')} WHERE user_id = ?`,
+                    updateValues
+                );
+            }
+        } else if (role === 'member') {
+            const updateFields = [];
+            const updateValues = [];
+
+            if (firstName !== undefined) {
+                updateFields.push('first_name = ?');
+                updateValues.push(firstName);
+            }
+            if (lastName !== undefined) {
+                updateFields.push('last_name = ?');
+                updateValues.push(lastName);
+            }
+            if (phone !== undefined) {
+                updateFields.push('phone = ?');
+                updateValues.push(phone);
+            }
+            if (address !== undefined) {
+                updateFields.push('address = ?');
+                updateValues.push(address);
+            }
+            if (dateOfBirth !== undefined) {
+                updateFields.push('date_of_birth = ?');
+                updateValues.push(dateOfBirth);
+            }
+            if (gender !== undefined) {
+                updateFields.push('gender = ?');
+                updateValues.push(gender);
+            }
+            if (emergencyContact !== undefined) {
+                updateFields.push('emergency_contact = ?');
+                updateValues.push(emergencyContact);
+            }
+
+            if (updateFields.length > 0) {
+                updateValues.push(userId);
+                await db.query(
+                    `UPDATE members SET ${updateFields.join(', ')} WHERE user_id = ?`,
+                    updateValues
+                );
+            }
+        } else if (role === 'trainer') {
+            const updateFields = [];
+            const updateValues = [];
+
+            if (firstName !== undefined) {
+                updateFields.push('first_name = ?');
+                updateValues.push(firstName);
+            }
+            if (lastName !== undefined) {
+                updateFields.push('last_name = ?');
+                updateValues.push(lastName);
+            }
+            if (phone !== undefined) {
+                updateFields.push('phone = ?');
+                updateValues.push(phone);
+            }
+            if (specialization !== undefined) {
+                updateFields.push('specialization = ?');
+                updateValues.push(specialization);
+            }
+            if (rating !== undefined) {
+                updateFields.push('rating = ?');
+                updateValues.push(rating);
+            }
+
+            if (updateFields.length > 0) {
+                updateValues.push(userId);
+                await db.query(
+                    `UPDATE trainers SET ${updateFields.join(', ')} WHERE user_id = ?`,
+                    updateValues
+                );
+            }
+        }
+
+        // Get updated profile
+        const [updatedUsers] = await db.query(
+            'SELECT id, email, role, is_active, created_at, updated_at FROM users WHERE id = ?',
+            [userId]
+        );
+
+        const user = updatedUsers[0];
+
+        // Get role-specific details
+        if (user.role === 'admin') {
+            const [admins] = await db.query(
+                'SELECT * FROM admins WHERE user_id = ?',
+                [user.id]
+            );
+            user.details = admins[0] || null;
+        } else if (user.role === 'member') {
+            const [members] = await db.query(
+                'SELECT * FROM members WHERE user_id = ?',
+                [user.id]
+            );
+            user.details = members[0] || null;
+        } else if (user.role === 'trainer') {
+            const [trainers] = await db.query(
+                'SELECT * FROM trainers WHERE user_id = ?',
+                [user.id]
+            );
+            user.details = trainers[0] || null;
+        }
+
+        res.json({
+            success: true,
+            message: 'Profile updated successfully',
+            data: user
+        });
+
+    } catch (error) {
+        console.error('Update profile error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error updating profile',
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     getAllUsers,
     getUser,
@@ -595,5 +916,8 @@ module.exports = {
     toggleUserStatus,
     updateUserPassword,
     getUserStats,
-    updateProfilePicture
+    updateProfilePicture,
+    getProfile,
+    uploadProfileImage,
+    updateProfile
 };

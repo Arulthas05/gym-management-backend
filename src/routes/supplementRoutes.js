@@ -5,6 +5,7 @@ const supplementController = require('../controllers/supplementController');
 const auth = require('../middleware/auth');
 const roleCheck = require('../middleware/roleCheck');
 const validate = require('../middleware/validation');
+const upload = require('../middleware/uploads');
 
 // Supplement Routes
 
@@ -18,6 +19,22 @@ router.get('/', supplementController.getAllSupplements);
 // @access  Public
 router.get('/:id', supplementController.getSupplement);
 
+// @route   POST /api/supplements/purchase
+// @desc    Purchase supplement (with payment)
+// @access  Private (Member)
+router.post(
+    '/purchase',
+    auth,
+    roleCheck('member', 'admin'),
+    [
+        body('supplementId').isNumeric().withMessage('Supplement ID must be a number'),
+        body('quantity').isNumeric().withMessage('Quantity must be a number'),
+        body('paymentIntentId').notEmpty().withMessage('Payment intent ID is required')
+    ],
+    validate,
+    supplementController.purchaseSupplement
+);
+
 // @route   POST /api/supplements
 // @desc    Create supplement
 // @access  Private (Admin)
@@ -25,6 +42,7 @@ router.post(
     '/',
     auth,
     roleCheck('admin'),
+    upload.single('supplementImage'),
     [
         body('name').notEmpty().withMessage('Supplement name is required'),
         body('price').isNumeric().withMessage('Price must be a number'),
@@ -37,7 +55,7 @@ router.post(
 // @route   PUT /api/supplements/:id
 // @desc    Update supplement
 // @access  Private (Admin)
-router.put('/:id', auth, roleCheck('admin'), supplementController.updateSupplement);
+router.put('/:id', auth, roleCheck('admin'), upload.single('supplementImage'), supplementController.updateSupplement);
 
 // @route   DELETE /api/supplements/:id
 // @desc    Delete supplement

@@ -51,8 +51,8 @@ router.get('/qr-code/:memberId', auth, attendanceController.getMemberQRCode);
 
 // @route   GET /api/attendance
 // @desc    Get all attendance records
-// @access  Private (Admin)
-router.get('/', auth, roleCheck('admin'), attendanceController.getAllAttendance);
+// @access  Private (Admin, Trainer, Member)
+router.get('/', auth, roleCheck('admin', 'trainer', 'member'), attendanceController.getAllAttendance);
 
 // @route   GET /api/attendance/member/:memberId
 // @desc    Get member attendance history
